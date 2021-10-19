@@ -55,7 +55,7 @@ $cont_name = "state-files"
 Write-Host "container name: $cont_name"
 $container = az storage container create --name $cont_name --account-key $access_key --account-name $storageAccountName -g $rgName
 
-az devops login --organization https://dev.azure.com/KFsell
+az devops login --organization https://dev.azure.com/58878
 az devops configure -d project=devops
 
 $stage_two_vargroup = az pipelines variable-group list --group-name stage2-vars --query [0].id
