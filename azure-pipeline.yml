@@ -1,0 +1,167 @@
+name: Build Spokes
+
+resources:
+  repositories:
+    - repository: devOps
+      type: github
+      endpoint: github_connection
+      ref: main
+      name: HayGroup/devOps
+
+trigger: none
+
+stages:
+- stage: stage1
+  jobs:
+  - job: query
+    displayName: Get Devops Vnet
+    variables:
+    - group: stage1-vars
+    - name: workingDir
+      value: Production/stage1
+    pool:
+      name: kfdevopsagents
+    steps:
+    - script: 'terraform init'
+      workingDirectory: $(workingDir)
+      displayName: 'Terraform init'
+      enabled: true
+      env:
+        ARM_CLIENT_ID: $(arm_client_id)
+        ARM_CLIENT_SECRET: $(arm_client_secret)
+        ARM_SUBSCRIPTION_ID: $(arm_subscription_id)
+        ARM_TENANT_ID: $(arm_tenant_id)
+        AZURE_STORAGE_ACCOUNT: $(devOps_storage)
+        AZURE_STORAGE_KEY: $(devOps_storage_key)
+
+    - script: |
+        terraform apply --auto-approve 
+        devopsVnet=`terraform output -raw devopVnetID`
+        echo $devopsVnet
+        echo "##vso[task.setvariable variable=devopsVnet;isOutput=true;]$devopsVnet"
+        devopsSubnet=`terraform output -raw devopsSubnetID`
+        echo $devopsSubnet
+        echo "##vso[task.setvariable variable=devopsSubnet;isOutput=true;]$devopsSubnet"
+        devopsDNSZoneID=`terraform output -raw devopsDNSZoneID`
+        echo $devopsDNSZoneID
+        echo "##vso[task.setvariable variable=devopsDNSZoneID;isOutput=true;]$devopsDNSZoneID"
+      workingDirectory: $(workingDir)
+      displayName: 'Terraform apply'
+      name: terraformapply
+      enabled: true
+      env:
+        ARM_CLIENT_ID: $(arm_client_id)
+        ARM_CLIENT_SECRET: $(arm_client_secret)
+        ARM_SUBSCRIPTION_ID: $(arm_subscription_id)
+        ARM_TENANT_ID: $(arm_tenant_id)
+        AZURE_STORAGE_ACCOUNT: $(devOps_storage)
+        AZURE_STORAGE_KEY: $(devOps_storage_key)
+
+- stage: stage2
+  jobs:
+  - job: build
+    displayName: Build Production 
+    variables:
+    - group: stage2-vars
+    - name: workingDir
+      value: Production/stage2
+    - name: devOpsVnetID
+      value: $[ stageDependencies.stage1.query.outputs['terraformapply.devopsVnet'] ]
+    - name: devOpsSubnetID
+      value: $[ stageDependencies.stage1.query.outputs['terraformapply.devopsSubnet']]
+    - name: tfvars
+      value: '-var="environment_name=$(environments)" -var="HUB_vnet_address_space=$(HUB_vnet_address_space)" -var="KFS_vnet_address_space=$(KFS_vnet_address_space)" -var="env_seq=$(nextEnvSeq)" -var="aks_service_cidr=$(aks_service_cidr)" -var="docker_bridge_cidr=$(docker_bridge_cidr)" -var="dns_service_ip=$(dns_service_ip)" -var="devOps_vnet_id=$(devopsVnetID)" -var="devOps_subnet_id=$(devOpsSubnetID)" -var="user_assigned_identity=$(managed_identity)" -var="user_assigned_identity_rg=$(managed_identity_group)" -var="threat_detection_email=$(threat_detection_email)"'
+    pool:
+      name: kfdevopsagents
+    steps:
+    - script: 'terraform init --backend-config="resource_group_name=$(devOps_rg)" --backend-config="storage_account_name=$(devOps_storage)" --backend-config="container_name=$(devOps_cont)" --backend-config="key=$(choose_rg)-$(environments)-$(nextEnvSeq)-state.tfstate"'
+      workingDirectory: $(workingDir)
+      displayName: 'Terraform init'
+      enabled: true
+      env:
+        ARM_CLIENT_ID: $(arm_client_id)
+        ARM_CLIENT_SECRET: $(arm_client_secret)
+        ARM_SUBSCRIPTION_ID: $(arm_subscription_id)
+        ARM_TENANT_ID: $(arm_tenant_id)
+        AZURE_STORAGE_ACCOUNT: $(devOps_storage)
+        AZURE_STORAGE_KEY: $(devOps_storage_key)
+    
+    - script: |
+        terraform plan $(tfvars)
+
+      workingDirectory: $(workingDir)
+      displayName: 'Terraform plan'
+      enabled: true
+      env:
+        ARM_CLIENT_ID: $(arm_client_id)
+        ARM_CLIENT_SECRET: $(arm_client_secret)
+        ARM_SUBSCRIPTION_ID: $(arm_subscription_id)
+        ARM_TENANT_ID: $(arm_tenant_id)
+        AZURE_STORAGE_ACCOUNT: $(devOps_storage)
+        AZURE_STORAGE_KEY: $(devOps_storage_key)
+
+    - script: |
+        terraform apply --auto-approve $(tfvars)
+        identity=`terraform output -raw IdentityID`
+        echo $identity
+        echo "##vso[task.setvariable variable=aksIdentity;]$identity"
+        clientID=`terraform output -raw clientID`
+        echo $clientID
+        echo "##vso[task.setvariable variable=aksClientID;]$clientID"
+        rgNameRaw=`terraform output -raw RGName`
+        rgName=${rgNameRaw,,}
+        echo $rgName
+        echo "##vso[task.setvariable variable=aksrgName;]$rgName"
+        aksNameRaw=`terraform output -raw AKSName`
+        aksName=${aksNameRaw,,}
+        echo $aksName
+        echo "##vso[task.setvariable variable=aksName;]$aksName"
+        keyVaultNameRaw=`terraform output -raw keyVaultName`
+        keyVaultName=${keyVaultNameRaw,,}
+        echo $keyVaultName
+        echo "##vso[task.setvariable variable=keyVaultName;]$keyVaultName"
+        tenantID=`terraform output -raw TenantID`
+        echo $tenantID
+        echo "##vso[task.setvariable variable=tenantID;]$tenantID"
+        nodeRg=`terraform output -raw nodeRg`
+        echo $nodeRg
+        echo "##vso[task.setvariable variable=nodeRg;]$nodeRg"
+      workingDirectory: $(workingDir)
+      displayName: 'Terraform apply'
+      enabled: true
+      env:
+        ARM_CLIENT_ID: $(arm_client_id)
+        ARM_CLIENT_SECRET: $(arm_client_secret)
+        ARM_SUBSCRIPTION_ID: $(arm_subscription_id)
+        ARM_TENANT_ID: $(arm_tenant_id)
+        AZURE_STORAGE_ACCOUNT: $(devOps_storage)
+        AZURE_STORAGE_KEY: $(devOps_storage_key)
+    
+    - task: HelmDeploy@0
+      displayName: Create Ingress controller
+      enabled: true
+      inputs:
+        connectionType: 'Azure Resource Manager'
+        azureSubscription: 'azure_connection'
+        azureResourceGroup: $(aksrgName)
+        kubernetesCluster: $(aksName)
+        useClusterAdmin: true
+        namespace: 'ingress-basic'
+        command: 'install'
+        chartType: 'Name'
+        chartName: 'ingress-nginx/ingress-nginx'
+        releaseName: 'nginx-ingress'
+        overrideValues: 'controller.replicaCount=2,controller.nodeSelector."beta\.kubernetes\.io/os"=linux,defaultBackend.nodeSelector."beta\.kubernetes\.io/os"=linux,controller.admissionWebhooks.patch.nodeSelector."beta\.kubernetes\.io/os"=linux'
+
+    - task: Kubernetes@1
+      displayName: Create ingress rules
+      enabled: true
+      inputs:
+        connectionType: 'Azure Resource Manager'
+        azureSubscriptionEndpoint: 'azure_connection'
+        azureResourceGroup: $(aksrgName)
+        kubernetesCluster: $(aksName)
+        useClusterAdmin: true
+        command: 'apply'
+        useConfigurationFile: true
+        configuration: 'platform-ingress.yml'
